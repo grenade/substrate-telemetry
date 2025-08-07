@@ -2,7 +2,7 @@ use anyhow::Result;
 use common::ws_client::{self, RecvMessage, SentMessage};
 use csv::Writer;
 use futures::StreamExt;
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -72,7 +72,7 @@ struct TelemetryObserver {
 
 impl TelemetryObserver {
     async fn new(config: Config) -> Result<Self> {
-        println!("TelemetryObserver::new() called");
+        debug!("TelemetryObserver::new() called");
         // Load or initialize nodes
         let nodes = if config.nodes_file.exists() {
             let file = File::open(&config.nodes_file)?;
@@ -92,7 +92,7 @@ impl TelemetryObserver {
         };
 
         // Initialize CSV writer
-        println!("Initializing CSV writer at {:?}", config.output_path);
+        info!("Initializing CSV writer at {:?}", config.output_path);
         let csv_exists = config.output_path.exists() && config.output_path.metadata()?.len() > 0;
         let file = OpenOptions::new()
             .create(true)
@@ -124,54 +124,54 @@ impl TelemetryObserver {
     }
 
     async fn process_message(&self, msg: &str) -> Result<()> {
-        println!("Processing message: {}", msg);
+        trace!("Processing message: {}", msg);
         let value: Value = serde_json::from_str(msg)?;
 
         if let Some(arr) = value.as_array() {
             if arr.is_empty() {
-                println!("Empty array message, ignoring");
+                trace!("Empty array message, ignoring");
                 return Ok(());
             }
 
-            println!(
+            trace!(
                 "Message array length: {}, first element: {:?}",
                 arr.len(),
                 arr[0]
             );
             match arr[0].as_u64() {
                 Some(3) => {
-                    println!("Processing node message (type 3)");
+                    debug!("Processing node message (type 3)");
                     self.process_node_message(arr).await?
                 }
                 Some(6) => {
-                    println!("Processing block import message (type 6)");
+                    debug!("Processing block import message (type 6)");
                     self.process_block_import(arr).await?
                 }
                 Some(msg_type) => {
-                    println!("Ignoring message type: {}", msg_type);
+                    trace!("Ignoring message type: {}", msg_type);
                 }
                 None => {
-                    println!("First element is not a number: {:?}", arr[0]);
+                    warn!("First element is not a number: {:?}", arr[0]);
                 }
             }
         } else {
-            println!("Message is not an array: {:?}", value);
+            warn!("Message is not an array: {:?}", value);
         }
 
         Ok(())
     }
 
     async fn process_node_message(&self, arr: &[Value]) -> Result<()> {
-        println!(
+        debug!(
             "process_node_message called with array length: {}",
             arr.len()
         );
         if arr.len() < 2 {
-            println!("Node message array too short, need at least 2 elements");
+            debug!("Node message array too short, need at least 2 elements");
             return Ok(());
         }
 
-        println!("Node message structure: {:?}", arr);
+        trace!("Node message structure: {:?}", arr);
 
         // The structure is [3, [node_idx, [node_data...]]]
         if let Some(node_array) = arr[1].as_array() {
@@ -179,7 +179,7 @@ impl TelemetryObserver {
                 if let (Some(node_idx), Some(node_data)) =
                     (node_array[0].as_u64(), node_array[1].as_array())
                 {
-                    println!(
+                    debug!(
                         "Node idx: {}, node data array length: {}",
                         node_idx,
                         node_data.len()
@@ -195,7 +195,7 @@ impl TelemetryObserver {
                             node_data[4].as_str().unwrap_or("unknown").to_string()
                         };
 
-                        println!(
+                        info!(
                             "Storing node: idx={}, name={}, id={}",
                             node_idx, node_name, node_id
                         );
@@ -218,9 +218,9 @@ impl TelemetryObserver {
     }
 
     async fn process_block_import(&self, arr: &[Value]) -> Result<()> {
-        println!("process_block_import called with array: {:?}", arr);
+        trace!("process_block_import called with array: {:?}", arr);
         if arr.len() < 2 || !arr[1].is_array() {
-            println!(
+            debug!(
                 "Block import validation failed: arr.len()={}, arr[1].is_array()={}",
                 arr.len(),
                 arr.get(1).map_or(false, |v| v.is_array())
@@ -229,9 +229,9 @@ impl TelemetryObserver {
         }
 
         let data = arr[1].as_array().unwrap();
-        println!("Block import data array: {:?}", data);
+        trace!("Block import data array: {:?}", data);
         if data.len() < 2 || !data[1].is_array() {
-            println!(
+            debug!(
                 "Block import inner validation failed: data.len()={}, data[1].is_array()={}",
                 data.len(),
                 data.get(1).map_or(false, |v| v.is_array())
@@ -241,10 +241,10 @@ impl TelemetryObserver {
 
         let node_idx = data[0].as_u64().unwrap_or(0);
         let block_data = data[1].as_array().unwrap();
-        println!("Node idx: {}, block_data: {:?}", node_idx, block_data);
+        trace!("Node idx: {}, block_data: {:?}", node_idx, block_data);
 
         if block_data.len() < 5 {
-            println!("Block data too short: len={}", block_data.len());
+            debug!("Block data too short: len={}", block_data.len());
             return Ok(());
         }
 
@@ -252,20 +252,20 @@ impl TelemetryObserver {
         let block_hash = block_data[1].as_str().unwrap_or("").to_string();
         let propagation_time = block_data[4].as_u64().unwrap_or(0);
 
-        println!(
+        debug!(
             "Block details: number={}, hash={}, prop_time={}",
             block_number, block_hash, propagation_time
         );
 
         if block_hash.is_empty() || propagation_time == 0 {
-            println!("Invalid block data: empty hash or zero prop time");
+            debug!("Invalid block data: empty hash or zero prop time");
             return Ok(());
         }
 
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 
         let nodes = self.nodes.lock().await;
-        println!(
+        debug!(
             "Looking up node idx {} in nodes map with {} entries",
             node_idx,
             nodes.len()
@@ -277,7 +277,7 @@ impl TelemetryObserver {
         let node_id = node_info
             .map(|n| n.node_id.clone())
             .unwrap_or_else(|| "unknown_id".to_string());
-        println!("Node lookup result: name={}, id={}", node_name, node_id);
+        debug!("Node lookup result: name={}, id={}", node_name, node_id);
         drop(nodes);
 
         let mut blocks = self.blocks.lock().await;
@@ -313,7 +313,7 @@ impl TelemetryObserver {
 
         // Check if any blocks are ready for output
         let max_block = blocks.values().map(|b| b.block_number).max().unwrap_or(0);
-        println!(
+        debug!(
             "Checking blocks for output: current block={}, max_block={}, total blocks={}",
             block_number,
             max_block,
@@ -329,7 +329,7 @@ impl TelemetryObserver {
                     || block.block_number < max_block.saturating_sub(1));
 
             if should_output {
-                println!(
+                debug!(
                     "Block {} ready for output: report_count={}, time_since_first={}, block_num={}, max_block={}",
                     hash, block.report_count, time_since_first, block.block_number, max_block
                 );
@@ -337,7 +337,7 @@ impl TelemetryObserver {
 
             if should_output {
                 for reporter in &block.reporters {
-                    println!(
+                    debug!(
                         "Adding output for block {}: node={}, prop_time={}",
                         block.block_number, reporter.node_name, block.lowest_prop_time
                     );
@@ -354,7 +354,25 @@ impl TelemetryObserver {
             }
         }
 
-        println!("Total outputs to write: {}", outputs.len());
+        debug!("Total outputs to write: {}", outputs.len());
+
+        // Log tracking status
+        let now_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let time_str = format!(
+            "[{:02}:{:02}:{:02}]",
+            (now_time / 3600) % 24,
+            (now_time / 60) % 60,
+            now_time % 60
+        );
+        info!(
+            "{} Tracking {} blocks, {} outputs ready",
+            time_str,
+            blocks.len(),
+            outputs.len()
+        );
 
         // Clean up old blocks (keep only recent 100)
         let mut block_list: Vec<_> = blocks
@@ -372,10 +390,10 @@ impl TelemetryObserver {
 
         // Write outputs to CSV
         if !outputs.is_empty() {
-            println!("Writing {} records to CSV", outputs.len());
+            info!("Writing {} records to CSV", outputs.len());
             let mut csv_writer = self.csv_writer.lock().await;
             for (timestamp, node_name, node_id, block_number, block_hash, prop_time) in outputs {
-                println!(
+                debug!(
                     "CSV write: timestamp={}, node={}, block={}",
                     timestamp, node_name, block_number
                 );
@@ -389,7 +407,7 @@ impl TelemetryObserver {
                 ])?;
             }
             csv_writer.flush()?;
-            println!("CSV flush complete");
+            debug!("CSV flush complete");
         }
 
         // Save blocks to file
@@ -433,9 +451,9 @@ impl TelemetryObserver {
     }
 
     async fn run(&self, url: &str) -> Result<()> {
-        println!("run() method called with URL: {}", url);
+        debug!("run() method called with URL: {}", url);
         loop {
-            println!("Starting telemetry monitoring loop iteration...");
+            debug!("Starting telemetry monitoring loop iteration...");
             info!("Starting telemetry monitoring...");
             debug!(
                 "Connecting to {} with genesis hash {}",
@@ -444,32 +462,31 @@ impl TelemetryObserver {
 
             // Parse the URL to http::Uri
             let uri: http::Uri = url.parse().expect("Invalid WebSocket URL");
-            println!("Attempting WebSocket connection to: {}", uri);
+            info!("Attempting WebSocket connection to: {}", uri);
 
             match ws_client::connect(&uri).await {
                 Ok(connection) => {
-                    println!("WebSocket connection established!");
+                    info!("WebSocket connection established!");
                     let (sender, mut receiver) = connection.into_channels();
 
                     // Send subscription message
                     let subscribe_msg = format!("subscribe:{}", self.genesis_hash);
-                    println!("Sending subscription message: {}", subscribe_msg);
+                    debug!("Sending subscription message: {}", subscribe_msg);
                     if let Err(e) =
                         sender.unbounded_send(SentMessage::Text(subscribe_msg.to_string()))
                     {
-                        println!("Failed to send subscription: {}", e);
                         error!("Failed to send subscription: {}", e);
                         continue;
                     }
-                    println!("Subscription message sent successfully");
+                    debug!("Subscription message sent successfully");
 
                     // Read messages
-                    println!("Starting message receive loop...");
+                    debug!("Starting message receive loop...");
                     loop {
-                        println!("Waiting for next message...");
+                        trace!("Waiting for next message...");
                         match receiver.next().await {
                             Some(Ok(RecvMessage::Text(text))) => {
-                                println!("Received text message: {}", text);
+                                trace!("Received text message: {}", text);
                                 debug!(
                                     "Received line: {}...",
                                     &text.chars().take(100).collect::<String>()
@@ -479,10 +496,10 @@ impl TelemetryObserver {
                                 }
                             }
                             Some(Ok(RecvMessage::Binary(data))) => {
-                                println!("Received binary message, converting to text...");
+                                trace!("Received binary message, converting to text...");
                                 match String::from_utf8(data) {
                                     Ok(text) => {
-                                        println!("Binary message converted to text: {}", text);
+                                        trace!("Binary message converted to text: {}", text);
                                         debug!(
                                             "Received binary line: {}...",
                                             &text.chars().take(100).collect::<String>()
@@ -492,28 +509,24 @@ impl TelemetryObserver {
                                         }
                                     }
                                     Err(e) => {
-                                        println!("Failed to convert binary to UTF-8: {}", e);
                                         error!("Failed to convert binary message to UTF-8: {}", e);
                                     }
                                 }
                             }
                             Some(Err(e)) => {
-                                println!("WebSocket error: {}", e);
                                 error!("WebSocket error: {}", e);
                                 break;
                             }
                             None => {
-                                println!("WebSocket closed");
-                                error!("WebSocket closed");
+                                info!("WebSocket closed");
                                 break;
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    println!("Failed to connect: {}", e);
                     error!("Failed to connect: {}", e);
-                    println!("Sleeping for 5 seconds before retry...");
+                    debug!("Sleeping for 5 seconds before retry...");
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
             }
@@ -526,7 +539,6 @@ impl TelemetryObserver {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("Starting telemetry-observer...");
     let args: Vec<String> = env::args().collect();
 
     // Check for help flag
@@ -547,7 +559,7 @@ async fn main() -> Result<()> {
     }
 
     env_logger::init();
-    println!("Logger initialized");
+    debug!("Logger initialized");
 
     let mut config = Config::default();
 
@@ -582,11 +594,11 @@ async fn main() -> Result<()> {
     }
 
     let url = config.telemetry_url.clone();
-    println!(
+    info!(
         "Creating TelemetryObserver with URL: {} and genesis hash: {}",
         url, config.genesis_hash
     );
     let observer = TelemetryObserver::new(config).await?;
-    println!("TelemetryObserver created, starting run loop...");
+    info!("TelemetryObserver created, starting run loop...");
     observer.run(&url).await
 }

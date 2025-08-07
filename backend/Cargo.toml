@@ -1,9 +1,11 @@
 [workspace]
+resolver = "2"
 members = [
     "common",
     "telemetry_core",
     "telemetry_shard",
-    "test_utils"
+    "telemetry_observer",
+    "test_utils",
 ]
 
 [profile.dev]

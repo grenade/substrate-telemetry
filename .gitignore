@@ -24,3 +24,5 @@ npm-debug.log*
 npm-error.log*
 .vscode
 .nyc
+
+data/*
